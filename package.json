@@ -1,0 +1,36 @@
+{
+  "name": "probe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Probe — account-aware AWS troubleshooting assistant (SAM + TypeScript)",
+  "main": "dist/app.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "tsc -p tsconfig.json && node --test dist/tests/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "ui": "npx --yes serve ui -p 5173"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@aws-sdk/client-api-gateway": "^3.758.0",
+    "@aws-sdk/client-cloudformation": "^3.758.0",
+    "@aws-sdk/client-cloudwatch": "^3.758.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.758.0",
+    "@aws-sdk/client-dynamodb": "^3.758.0",
+    "@aws-sdk/client-ec2": "^3.758.0",
+    "@aws-sdk/client-lambda": "^3.758.0",
+    "@aws-sdk/client-s3": "^3.758.0",
+    "@aws-sdk/client-sns": "^3.758.0",
+    "@aws-sdk/client-sqs": "^3.758.0",
+    "@aws-sdk/client-ssm": "^3.758.0",
+    "@aws-sdk/lib-dynamodb": "^3.1158.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.147",
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
