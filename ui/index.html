@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#4c2365" />
+    <title>Probe — AWS Lambda investigator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Login: brand-first full composition -->
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-stage">
+          <aside class="login-hero" aria-hidden="false">
+            <div class="hero-glow" aria-hidden="true"></div>
+            <p class="brand">Probe</p>
+            <h1>Troubleshoot AWS resources from live account evidence.</h1>
+            <p class="lede">
+              Browse Lambda, S3, EC2, DynamoDB, queues, APIs, and log groups ,
+              then dig into failures with read-only diagnostics.
+            </p>
+            <ul class="hero-points">
+              <li>List resources in your account</li>
+              <li>Deep RCA for Lambda via CloudWatch</li>
+              <li>Guided next steps for other services</li>
+            </ul>
+          </aside>
+
+          <div class="login-panel">
+            <div id="config-status" class="config-status" data-ready="false">
+              <span class="status-dot"></span>
+              <span class="status-text">Connection not configured</span>
+              <button type="button" class="text-btn" id="open-settings-login">
+                Set up
+              </button>
+            </div>
+
+            <form id="login-form" class="login-form" autocomplete="on">
+              <h2 class="panel-title">Sign in</h2>
+              <label>
+                <span>Email</span>
+                <input
+                  id="login-email"
+                  name="email"
+                  type="email"
+                  required
+                  autocomplete="username"
+                  placeholder="you@example.com"
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <div class="password-row">
+                  <input
+                    id="login-password"
+                    name="password"
+                    type="password"
+                    required
+                    autocomplete="current-password"
+                    placeholder="••••••••••••"
+                  />
+                  <button
+                    type="button"
+                    class="btn-icon"
+                    id="toggle-password"
+                    aria-label="Show password"
+                    title="Show password"
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  </button>
+                </div>
+              </label>
+              <button type="submit" class="btn btn-primary btn-block" id="login-submit">
+                Continue
+              </button>
+              <p id="login-error" class="form-error" role="alert" hidden></p>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- Chat -->
+      <section id="chat-view" class="view chat-view" hidden>
+        <header class="topbar">
+          <div class="topbar-brand">
+            <button
+              type="button"
+              class="btn-icon sidebar-trigger"
+              id="open-sidebar"
+              aria-expanded="false"
+              aria-controls="scope-sidebar"
+              title="Open scope"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round" />
+              </svg>
+            </button>
+            <span class="brand">Probe</span>
+            <span class="topbar-meta" id="caller-label"></span>
+          </div>
+          <div class="topbar-actions">
+            <span id="conn-pill" class="conn-pill" title="API connection">offline</span>
+            <button type="button" class="text-btn" id="nav-alarms" title="CloudWatch alarms">
+              Alarms
+            </button>
+            <button type="button" class="text-btn" id="clear-chat" title="Clear transcript">
+              Clear
+            </button>
+            <button type="button" class="text-btn" id="open-settings">Settings</button>
+            <button type="button" class="text-btn" id="logout-btn">Sign out</button>
+          </div>
+        </header>
+
+        <main class="workspace">
+          <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+
+          <aside
+            id="scope-sidebar"
+            class="context-panel"
+            aria-label="Investigation options"
+            aria-hidden="true"
+          >
+            <div class="panel-head">
+              <h2>Scope</h2>
+              <button
+                type="button"
+                class="btn-icon"
+                id="close-sidebar"
+                title="Close scope"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+                </svg>
+              </button>
+            </div>
+
+            <div id="panel-body" class="panel-body">
+              <label>
+                <span>Resource type</span>
+                <select id="resource-type">
+                  <option value="lambda">Lambda</option>
+                  <option value="s3">S3</option>
+                  <option value="ec2">EC2</option>
+                  <option value="dynamodb">DynamoDB</option>
+                  <option value="sqs">SQS</option>
+                  <option value="sns">SNS</option>
+                  <option value="apigateway">API Gateway</option>
+                  <option value="loggroup">CloudWatch Log group</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Region</span>
+                <select id="region">
+                  <option value="us-east-1">us-east-1</option>
+                  <option value="us-east-2">us-east-2</option>
+                  <option value="us-west-1">us-west-1</option>
+                  <option value="us-west-2">us-west-2</option>
+                  <option value="eu-west-1">eu-west-1</option>
+                  <option value="eu-central-1">eu-central-1</option>
+                  <option value="ap-south-1">ap-south-1</option>
+                  <option value="ap-northeast-1">ap-northeast-1</option>
+                  <option value="ap-southeast-1">ap-southeast-1</option>
+                  <option value="ap-southeast-2">ap-southeast-2</option>
+                </select>
+              </label>
+
+              <div class="resource-picker">
+                <div class="resource-picker-head">
+                  <span class="field-label">Resource</span>
+                  <button type="button" class="text-btn" id="refresh-resources" title="Reload from AWS">
+                    Refresh
+                  </button>
+                </div>
+                <input
+                  id="resource-filter"
+                  type="search"
+                  placeholder="Filter list…"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <select id="resource-select" size="7" aria-label="Resources in account">
+                  <option value="" disabled selected>Refresh to load from AWS…</option>
+                </select>
+                <label class="resource-name-label">
+                  <span>Selected / paste name</span>
+                  <input
+                    id="function-name"
+                    type="text"
+                    placeholder="Or paste a resource name / id"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                </label>
+                <p id="resource-status" class="resource-status" aria-live="polite">
+                  Choose a type and region, then Refresh — or paste a name above.
+                </p>
+              </div>
+
+              <div class="lookback-block">
+                <span class="field-label">Lookback</span>
+                <div class="chip-row" id="lookback-chips" role="group" aria-label="Lookback presets">
+                  <button type="button" class="chip" data-mins="15">15m</button>
+                  <button type="button" class="chip is-active" data-mins="60">1h</button>
+                  <button type="button" class="chip" data-mins="360">6h</button>
+                  <button type="button" class="chip" data-mins="1440">24h</button>
+                </div>
+                <input id="lookback" type="hidden" value="60" />
+              </div>
+
+              <p class="hint" id="investigate-hint">
+                <strong>Lambda:</strong> full CloudWatch investigation.
+                Other types: guided troubleshooting from the selected resource.
+              </p>
+            </div>
+          </aside>
+
+          <div class="chat-column">
+            <div id="transcript" class="transcript" aria-live="polite"></div>
+
+            <form id="compose-form" class="compose">
+              <div class="compose-shell">
+                <label class="sr-only" for="question">Question</label>
+                <textarea
+                  id="question"
+                  rows="1"
+                  placeholder="What’s going wrong with this resource?"
+                  required
+                ></textarea>
+                <div class="compose-footer">
+                  <span class="kbd-hint"><kbd>↵</kbd> send · <kbd>⇧↵</kbd> newline</span>
+                  <button type="submit" class="btn btn-primary" id="send-btn">
+                    <span class="btn-label">Probe</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </main>
+      </section>
+
+      <!-- Alarms page -->
+      <section id="alarms-view" class="view alarms-view" hidden>
+        <header class="topbar">
+          <div class="topbar-brand">
+            <span class="brand">Probe</span>
+            <span class="topbar-meta">CloudWatch alarms</span>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" class="text-btn" id="nav-investigate" title="Back to investigate">
+              Investigate
+            </button>
+            <button type="button" class="text-btn" id="open-settings-alarms">Settings</button>
+            <button type="button" class="text-btn" id="logout-btn-alarms">Sign out</button>
+          </div>
+        </header>
+
+        <main class="alarms-page">
+          <header class="alarms-hero">
+            <div class="alarms-hero-copy">
+              <p class="alarms-kicker">Account signals</p>
+              <h1>Alarms &amp; reasons</h1>
+              <p class="alarms-lede">
+                Live CloudWatch metric alarms with the exact state reason AWS recorded when they fired.
+                Tap a card to carry that context into Investigate.
+              </p>
+            </div>
+            <div class="alarms-summary" id="alarms-summary" aria-live="polite">
+              <div class="alarms-stat">
+                <span class="alarms-stat-value" id="alarms-stat-count">—</span>
+                <span class="alarms-stat-label">Showing</span>
+              </div>
+              <div class="alarms-stat">
+                <span class="alarms-stat-value" id="alarms-stat-region">us-east-1</span>
+                <span class="alarms-stat-label">Region</span>
+              </div>
+              <div class="alarms-stat">
+                <span class="alarms-stat-value" id="alarms-stat-filter">ALARM</span>
+                <span class="alarms-stat-label">Filter</span>
+              </div>
+            </div>
+          </header>
+
+          <div class="alarms-toolbar">
+            <label class="alarms-field">
+              <span>Region</span>
+              <select id="alarms-region" aria-label="Alarms region">
+                <option value="us-east-1">us-east-1</option>
+                <option value="us-east-2">us-east-2</option>
+                <option value="us-west-1">us-west-1</option>
+                <option value="us-west-2">us-west-2</option>
+                <option value="eu-west-1">eu-west-1</option>
+                <option value="eu-central-1">eu-central-1</option>
+                <option value="ap-south-1">ap-south-1</option>
+                <option value="ap-northeast-1">ap-northeast-1</option>
+                <option value="ap-southeast-1">ap-southeast-1</option>
+                <option value="ap-southeast-2">ap-southeast-2</option>
+              </select>
+            </label>
+            <label class="alarms-field">
+              <span>State</span>
+              <select id="alarms-state" aria-label="Alarm state filter">
+                <option value="ALARM" selected>ALARM</option>
+                <option value="OK">OK</option>
+                <option value="INSUFFICIENT_DATA">INSUFFICIENT_DATA</option>
+                <option value="ALL">All</option>
+              </select>
+            </label>
+            <button type="button" class="btn btn-primary" id="refresh-alarms">
+              <span class="btn-label">Refresh</span>
+            </button>
+            <p id="alarms-status" class="resource-status alarms-status" aria-live="polite"></p>
+          </div>
+
+          <div id="alarms-list" class="alarms-grid" role="list">
+            <div class="alarms-empty">
+              <strong>No alarms loaded yet</strong>
+              <span>Choose a region and refresh to pull CloudWatch alarm state reasons.</span>
+            </div>
+          </div>
+        </main>
+      </section>
+    </div>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <form method="dialog" id="settings-form" class="settings-form">
+        <header>
+          <h2>Connection</h2>
+          <p>Paste values from your SAM stack outputs after deploy.</p>
+        </header>
+        <label>
+          <span>API URL</span>
+          <input
+            id="cfg-api-url"
+            type="url"
+            required
+            placeholder="https://….execute-api….amazonaws.com/prod/investigate"
+            spellcheck="false"
+          />
+        </label>
+        <label>
+          <span>Cognito User Pool ID</span>
+          <input id="cfg-pool-id" type="text" required placeholder="us-east-1_…" spellcheck="false" />
+        </label>
+        <label>
+          <span>App client ID</span>
+          <input id="cfg-client-id" type="text" required spellcheck="false" />
+        </label>
+        <label>
+          <span>Cognito region</span>
+          <input id="cfg-region" type="text" required value="us-east-1" spellcheck="false" />
+        </label>
+        <p id="settings-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="submit" class="btn btn-primary" value="save">Save</button>
+          <button type="button" class="btn btn-ghost" id="settings-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" hidden role="status"></div>
+
+    <script>
+      window.TROUBLESHOOT_CONFIG = window.TROUBLESHOOT_CONFIG || {};
+    </script>
+    <script src="./config.js"></script>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
