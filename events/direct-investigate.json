@@ -1,0 +1,6 @@
+{
+  "function_name": "lambdaLogs-dev-dev-submitContact",
+  "region": "us-east-1",
+  "question": "Why is my Lambda function failing?",
+  "lookback_minutes": 60
+}

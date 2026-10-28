@@ -1,0 +1,432 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Probe — account-aware AWS troubleshooting assistant (TypeScript / tsc).
+  Read-only diagnostics for Lambda + CloudWatch, with OpenAI root-cause analysis.
+  Single account / single region (default us-east-1).
+
+Parameters:
+  OpenAIParameterName:
+    Type: String
+    Default: add your api key path here
+    Description: >
+      SSM Parameter Store name (SecureString) for the OpenAI API key.
+      Value may be a plain key or JSON with "api_key".
+      Example: add your api key path here
+  InvestigationRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region the assistant investigates (v1 = one region).
+  LogLookbackMinutes:
+    Type: Number
+    Default: 60
+    MinValue: 5
+    MaxValue: 1440
+    Description: Default CloudWatch Logs lookback window.
+  MaxLogEvents:
+    Type: Number
+    Default: 50
+    MinValue: 10
+    MaxValue: 200
+    Description: Max log events collected per investigation.
+  CreateLexBot:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Whether to create the Lex V2 bot resources.
+
+Conditions:
+  ShouldCreateLexBot: !Equals [!Ref CreateLexBot, 'true']
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Timeout: 60
+    MemorySize: 512
+    Architectures: [x86_64]
+    Environment:
+      Variables:
+        INVESTIGATION_REGION: !Ref InvestigationRegion
+        OPENAI_PARAMETER_NAME: !Ref OpenAIParameterName
+        LOG_LOOKBACK_MINUTES: !Ref LogLookbackMinutes
+        MAX_LOG_EVENTS: !Ref MaxLogEvents
+        OPENAI_MODEL: gpt-4o-mini
+
+Resources:
+  TroubleshootingFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-orchestrator'
+      CodeUri: .
+      Handler: app.handler
+      Description: Read-only AWS troubleshooting orchestrator (Lex + HTTP).
+      Policies:
+        - Statement:
+            - Sid: SsmReadOpenAI
+              Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${OpenAIParameterName}'
+            - Sid: KmsDecryptSecureString
+              Effect: Allow
+              Action:
+                - kms:Decrypt
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+            - Sid: LambdaDiagnosticsReadOnly
+              Effect: Allow
+              Action:
+                - lambda:ListFunctions
+                - lambda:GetFunction
+                - lambda:GetFunctionConfiguration
+                - lambda:GetFunctionConcurrency
+                - lambda:ListTags
+                - lambda:GetPolicy
+              Resource: '*'
+            - Sid: S3ListReadOnly
+              Effect: Allow
+              Action:
+                - s3:ListAllMyBuckets
+                - s3:GetBucketLocation
+              Resource: '*'
+            - Sid: Ec2ListReadOnly
+              Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+                - ec2:DescribeTags
+              Resource: '*'
+            - Sid: DynamoDbListReadOnly
+              Effect: Allow
+              Action:
+                - dynamodb:ListTables
+              Resource: '*'
+            - Sid: SqsListReadOnly
+              Effect: Allow
+              Action:
+                - sqs:ListQueues
+              Resource: '*'
+            - Sid: SnsListReadOnly
+              Effect: Allow
+              Action:
+                - sns:ListTopics
+              Resource: '*'
+            - Sid: ApiGatewayListReadOnly
+              Effect: Allow
+              Action:
+                - apigateway:GET
+              Resource: '*'
+            - Sid: CloudWatchLogsReadOnly
+              Effect: Allow
+              Action:
+                - logs:DescribeLogGroups
+                - logs:DescribeLogStreams
+                - logs:FilterLogEvents
+                - logs:GetLogEvents
+              Resource: '*'
+            - Sid: CloudWatchMetricsReadOnly
+              Effect: Allow
+              Action:
+                - cloudwatch:GetMetricData
+                - cloudwatch:GetMetricStatistics
+                - cloudwatch:ListMetrics
+                - cloudwatch:DescribeAlarms
+              Resource: '*'
+            - Sid: CloudFormationReadOnly
+              Effect: Allow
+              Action:
+                - cloudformation:ListStacks
+                - cloudformation:DescribeStacks
+                - cloudformation:DescribeStackEvents
+                - cloudformation:DescribeStackResources
+                - cloudformation:ListStackResources
+              Resource: '*'
+            - Sid: ChatHistoryTableAccess
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:Query
+                - dynamodb:DeleteItem
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt ChatHistoryTable.Arn
+      Environment:
+        Variables:
+          CHAT_HISTORY_TABLE: !Ref ChatHistoryTable
+      Events:
+        InvestigateApi:
+          Type: Api
+          Properties:
+            Path: /investigate
+            Method: post
+            RestApiId: !Ref TroubleshootApi
+        ListResourcesApi:
+          Type: Api
+          Properties:
+            Path: /resources
+            Method: get
+            RestApiId: !Ref TroubleshootApi
+        ListHistoryApi:
+          Type: Api
+          Properties:
+            Path: /history
+            Method: get
+            RestApiId: !Ref TroubleshootApi
+        PutHistoryApi:
+          Type: Api
+          Properties:
+            Path: /history
+            Method: post
+            RestApiId: !Ref TroubleshootApi
+        DeleteHistoryApi:
+          Type: Api
+          Properties:
+            Path: /history
+            Method: delete
+            RestApiId: !Ref TroubleshootApi
+        ListAlarmsApi:
+          Type: Api
+          Properties:
+            Path: /alarms
+            Method: get
+            RestApiId: !Ref TroubleshootApi
+
+  ChatHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-chat-history'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  # Cognito protects POST /investigate. Unauthenticated callers get 401.
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: 'OFF'
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${AWS::StackName}-api-client'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      SupportedIdentityProviders: [COGNITO]
+      AllowedOAuthFlowsUserPoolClient: false
+
+  TroubleshootApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-api'
+      StageName: prod
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt UserPool.Arn
+
+  LexInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: ShouldCreateLexBot
+    Properties:
+      FunctionName: !Ref TroubleshootingFunction
+      Action: lambda:InvokeFunction
+      Principal: lexv2.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  TroubleshootBotRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateLexBot
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lexv2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LexInvokeTroubleshootingLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt TroubleshootingFunction.Arn
+
+  TroubleshootBot:
+    Type: AWS::Lex::Bot
+    Condition: ShouldCreateLexBot
+    Properties:
+      Name: !Sub '${AWS::StackName}-bot'
+      RoleArn: !GetAtt TroubleshootBotRole.Arn
+      DataPrivacy:
+        ChildDirected: false
+      IdleSessionTTLInSeconds: 300
+      AutoBuildBotLocales: true
+      BotLocales:
+        - LocaleId: en_US
+          NluConfidenceThreshold: 0.4
+          Description: English troubleshooting intents
+          # AMAZON.FreeFormInput cannot appear in sample utterances — use custom types.
+          SlotTypes:
+            - Name: FunctionNameType
+              Description: Lambda function name
+              ValueSelectionSetting:
+                ResolutionStrategy: ORIGINAL_VALUE
+              SlotTypeValues:
+                - SampleValue: { Value: my-function }
+                - SampleValue: { Value: orderProcessor }
+                - SampleValue: { Value: lambdaLogs-dev-dev-submitContact }
+                - SampleValue: { Value: api-handler }
+            - Name: AwsRegionType
+              Description: AWS region code
+              ValueSelectionSetting:
+                ResolutionStrategy: ORIGINAL_VALUE
+              SlotTypeValues:
+                - SampleValue: { Value: us-east-1 }
+                - SampleValue: { Value: us-west-2 }
+                - SampleValue: { Value: eu-west-1 }
+                - SampleValue: { Value: ap-south-1 }
+          Intents:
+            - Name: InvestigateLambda
+              Description: Investigate why a Lambda function is failing
+              SampleUtterances:
+                - Utterance: Why is my Lambda function failing
+                - Utterance: Why is Lambda {FunctionName} failing
+                - Utterance: Investigate Lambda {FunctionName}
+                - Utterance: Troubleshoot function {FunctionName}
+                - Utterance: Check errors for {FunctionName}
+                - Utterance: What is wrong with my Lambda {FunctionName}
+                - Utterance: Diagnose Lambda {FunctionName} in {Region}
+              Slots:
+                - Name: FunctionName
+                  SlotTypeName: FunctionNameType
+                  ValueElicitationSetting:
+                    SlotConstraint: Required
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: Which Lambda function should I investigate?
+                      MaxRetries: 2
+                      AllowInterrupt: true
+                - Name: Region
+                  SlotTypeName: AwsRegionType
+                  ValueElicitationSetting:
+                    SlotConstraint: Optional
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: Which AWS region? Leave blank to use the default.
+                      MaxRetries: 1
+                      AllowInterrupt: true
+              FulfillmentCodeHook:
+                Enabled: true
+            - Name: FallbackIntent
+              ParentIntentSignature: AMAZON.FallbackIntent
+              Description: Fallback when the request is unclear
+          VoiceSettings:
+            VoiceId: Joanna
+            Engine: neural
+      TestBotAliasSettings:
+        BotAliasLocaleSettings:
+          - LocaleId: en_US
+            BotAliasLocaleSetting:
+              Enabled: true
+              CodeHookSpecification:
+                LambdaCodeHook:
+                  CodeHookInterfaceVersion: '1.0'
+                  LambdaArn: !GetAtt TroubleshootingFunction.Arn
+
+Outputs:
+  InvestigateApiUrl:
+    Description: POST /investigate (requires Cognito Bearer id/access token).
+    Value: !Sub 'https://${TroubleshootApi}.execute-api.${AWS::Region}.amazonaws.com/prod/investigate'
+  ResourcesApiUrl:
+    Description: GET /resources?type=lambda&region=us-east-1 (Cognito JWT required).
+    Value: !Sub 'https://${TroubleshootApi}.execute-api.${AWS::Region}.amazonaws.com/prod/resources'
+  HistoryApiUrl:
+    Description: GET/POST/DELETE /history — per-user chat turns (Cognito JWT required).
+    Value: !Sub 'https://${TroubleshootApi}.execute-api.${AWS::Region}.amazonaws.com/prod/history'
+  AlarmsApiUrl:
+    Description: GET /alarms?region=us-east-1&state=ALARM — CloudWatch alarms with state reasons.
+    Value: !Sub 'https://${TroubleshootApi}.execute-api.${AWS::Region}.amazonaws.com/prod/alarms'
+  ChatHistoryTableName:
+    Description: DynamoDB table for Cognito-scoped investigation chat history.
+    Value: !Ref ChatHistoryTable
+  UserPoolId:
+    Description: Cognito User Pool ID — create users here before calling the API.
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito app client ID used to sign in and obtain JWTs.
+    Value: !Ref UserPoolClient
+  UserPoolArn:
+    Description: Cognito User Pool ARN
+    Value: !GetAtt UserPool.Arn
+  TroubleshootingFunctionArn:
+    Description: Orchestrator Lambda ARN
+    Value: !GetAtt TroubleshootingFunction.Arn
+  TroubleshootingFunctionName:
+    Description: Orchestrator Lambda name
+    Value: !Ref TroubleshootingFunction
+  LexBotId:
+    Condition: ShouldCreateLexBot
+    Description: >
+      Lex V2 bot ID. Runtime invoke of the orchestrator is limited to lexv2.amazonaws.com.
+      Calling the bot itself requires IAM (lex:RecognizeText) — not a public URL.
+    Value: !Ref TroubleshootBot
+  InvestigationRegion:
+    Description: Region used for investigations
+    Value: !Ref InvestigationRegion

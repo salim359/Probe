@@ -1,0 +1,34 @@
+{
+  "sessionId": "test-session",
+  "inputTranscript": "Investigate Lambda lambdaLogs-dev-dev-submitContact",
+  "invocationSource": "FulfillmentCodeHook",
+  "bot": {
+    "id": "XXXXXXXX",
+    "name": "troubleshoot-bot",
+    "aliasId": "TSTALIASID",
+    "localeId": "en_US",
+    "version": "DRAFT"
+  },
+  "sessionState": {
+    "intent": {
+      "name": "InvestigateLambda",
+      "state": "ReadyForFulfillment",
+      "slots": {
+        "FunctionName": {
+          "value": {
+            "originalValue": "lambdaLogs-dev-dev-submitContact",
+            "interpretedValue": "lambdaLogs-dev-dev-submitContact"
+          },
+          "shape": "Scalar"
+        },
+        "Region": {
+          "value": {
+            "originalValue": "us-east-1",
+            "interpretedValue": "us-east-1"
+          },
+          "shape": "Scalar"
+        }
+      }
+    }
+  }
+}
