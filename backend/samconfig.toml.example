@@ -1,0 +1,15 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "probe-2-0"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+# Copy to samconfig.toml and fill in your secret names / voice id.
+parameter_overrides = "AllowedOrigin=\"*\" OpenAISecretName=\"YOUR_OPENAI_SECRET\" ElevenLabsSecretName=\"YOUR_ELEVENLABS_SECRET\" ElevenLabsVoiceId=\"YOUR_VOICE_ID\""

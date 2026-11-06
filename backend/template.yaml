@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Probe 2.0 — AWS account troubleshooting voice assistant
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 15
+    MemorySize: 256
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        AUDIO_BUCKET: !Ref AudioBucket
+
+Parameters:
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+    Description: CORS origin for the HTTP API and S3 bucket (use your frontend URL in production)
+
+  OpenAISecretName:
+    Type: String
+    Default: cloud-companion/openai2
+    Description: Secrets Manager secret name for the OpenAI API key
+
+  OpenAISecretJsonKey:
+    Type: String
+    Default: cloud-companion/openai2
+    Description: JSON key inside the OpenAI secret that holds the API key
+
+  ElevenLabsSecretName:
+    Type: String
+    Default: cloud-companion/elevenlabs2
+    Description: Secrets Manager secret name for the ElevenLabs API key
+
+  ElevenLabsSecretJsonKey:
+    Type: String
+    Default: cloud-companion/elevenlabs2
+    Description: JSON key inside the ElevenLabs secret that holds the API key
+
+  ElevenLabsVoiceId:
+    Type: String
+    Default: cgSgspJ2msm6clMCkdW9
+    Description: ElevenLabs voice ID (cloned or stock voice)
+
+  OpenAITranscribeModel:
+    Type: String
+    Default: gpt-4o-mini-transcribe
+    Description: OpenAI audio transcription model
+
+  OpenAIChatModel:
+    Type: String
+    Default: gpt-4o-mini
+    Description: OpenAI chat model for the assistant reply
+
+  ElevenLabsModelId:
+    Type: String
+    Default: eleven_multilingual_v2
+    Description: ElevenLabs TTS model ID
+
+Resources:
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowHeaders:
+          - Content-Type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+
+  AudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - HEAD
+            AllowedOrigins:
+              - !Ref AllowedOrigin
+            MaxAge: 3000
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAudioAfter7Days
+            Status: Enabled
+            ExpirationInDays: 7
+
+  CreateUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: handler.handler
+      Description: Issues a short-lived S3 presigned PUT URL for audio upload
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref AudioBucket
+      Events:
+        CreateUpload:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /uploads
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        EntryPoints:
+          - src/create-upload/handler.ts
+
+  ListResourcesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: handler.handler
+      Description: List AWS resources for the Probe scope picker
+      Timeout: 20
+      MemorySize: 256
+      Environment:
+        Variables:
+          INVESTIGATION_REGION: !Ref AWS::Region
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:ListFunctions
+                - s3:ListAllMyBuckets
+                - s3:GetBucketLocation
+                - s3:ListBucket
+                - s3:GetBucketVersioning
+                - s3:HeadBucket
+                - ec2:DescribeInstances
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeTags
+                - dynamodb:ListTables
+                - dynamodb:DescribeTable
+                - dynamodb:DescribeTimeToLive
+                - dynamodb:ListTagsOfResource
+                - sqs:ListQueues
+                - sqs:GetQueueUrl
+                - sqs:GetQueueAttributes
+                - sqs:ListDeadLetterSourceQueues
+                - sns:ListTopics
+                - sns:GetTopicAttributes
+                - sns:ListSubscriptionsByTopic
+                - sns:GetSubscriptionAttributes
+                - apigateway:GET
+                - logs:DescribeLogGroups
+                - cloudwatch:GetMetricData
+                - cloudwatch:DescribeAlarms
+                - sts:GetCallerIdentity
+                - budgets:ViewBudget
+                - budgets:DescribeBudgets
+              Resource: "*"
+      Events:
+        ListResources:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /resources
+            Method: GET
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        EntryPoints:
+          - src/list-resources/handler.ts
+
+  ProcessAudioFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: handler.handler
+      Description: AWS troubleshooting — STT, account diagnostics, reply TTS
+      # API Gateway HTTP API caps integrations at 30s — stay under that.
+      Timeout: 29
+      MemorySize: 512
+      Environment:
+        Variables:
+          OPENAI_SECRET_NAME: !Ref OpenAISecretName
+          OPENAI_SECRET_JSON_KEY: !Ref OpenAISecretJsonKey
+          ELEVENLABS_SECRET_NAME: !Ref ElevenLabsSecretName
+          ELEVENLABS_SECRET_JSON_KEY: !Ref ElevenLabsSecretJsonKey
+          OPENAI_TRANSCRIBE_MODEL: !Ref OpenAITranscribeModel
+          OPENAI_CHAT_MODEL: !Ref OpenAIChatModel
+          ELEVENLABS_VOICE_ID: !Ref ElevenLabsVoiceId
+          ELEVENLABS_MODEL_ID: !Ref ElevenLabsModelId
+          INVESTIGATION_REGION: !Ref AWS::Region
+          LOG_LOOKBACK_MINUTES: "60"
+          MAX_LOG_EVENTS: "40"
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref AudioBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${OpenAISecretName}-*
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ElevenLabsSecretName}-*
+            - Sid: ProbeReadOnlyDiagnostics
+              Effect: Allow
+              Action:
+                - sts:GetCallerIdentity
+                - lambda:ListFunctions
+                - lambda:GetFunction
+                - lambda:GetFunctionConfiguration
+                - lambda:GetFunctionConcurrency
+                - lambda:ListTags
+                - s3:ListAllMyBuckets
+                - s3:GetBucketLocation
+                - s3:ListBucket
+                - s3:GetBucketVersioning
+                - s3:HeadBucket
+                - ec2:DescribeInstances
+                - ec2:DescribeInstanceStatus
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeTags
+                - dynamodb:ListTables
+                - dynamodb:DescribeTable
+                - dynamodb:DescribeTimeToLive
+                - dynamodb:ListTagsOfResource
+                - sqs:ListQueues
+                - sqs:GetQueueUrl
+                - sqs:GetQueueAttributes
+                - sqs:ListDeadLetterSourceQueues
+                - sns:ListTopics
+                - sns:GetTopicAttributes
+                - sns:ListSubscriptionsByTopic
+                - sns:GetSubscriptionAttributes
+                - apigateway:GET
+                - logs:DescribeLogGroups
+                - logs:DescribeLogStreams
+                - logs:FilterLogEvents
+                - logs:GetLogEvents
+                - cloudwatch:GetMetricData
+                - cloudwatch:GetMetricStatistics
+                - cloudwatch:ListMetrics
+                - cloudwatch:DescribeAlarms
+                - cloudwatch:DescribeAlarmHistory
+                - budgets:ViewBudget
+                - budgets:DescribeBudgets
+                - cloudformation:ListStacks
+                - cloudformation:DescribeStacks
+                - cloudformation:DescribeStackEvents
+                - cloudformation:DescribeStackResources
+                - cloudformation:ListStackResources
+              Resource: "*"
+      Events:
+        ProcessAudio:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /process
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        EntryPoints:
+          - src/process-audio/handler.ts
+
+Outputs:
+  ApiEndpoint:
+    Description: HTTP API base URL for the frontend
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  AudioBucketName:
+    Description: Private S3 bucket for voice recordings and replies
+    Value: !Ref AudioBucket
